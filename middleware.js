@@ -2,19 +2,23 @@ const express = require('express');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
-// const User = require('../models/User'); // Comentado para versión standalone
-
+const { createClient } = require('@supabase/supabase-js');
+const bcrypt = require('bcryptjs');
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 const JWT_SECRET = process.env.JWT_SECRET || 'secret_key_dev';
 
-// Base de datos simulada en memoria (Mock)
-const users = [
-    { id: 1, username: 'user', password: 'password', role: 'user' },
-    { id: 2, username: 'admin', password: 'admin', role: 'admin' }
-];
+const SALT_ROUNDS = 10;
+
+// --- Conexión a Supabase ---
+const supabaseUrl = process.env.SUPABASE_URL || 'https://ouqpeojilykkrmatijxp.supabase.co'; // <-- PEGA TU URL AQUÍ
+const supabaseKey = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im91cXBlb2ppbHlra3JtYXRpanhwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk5OTc3NjgsImV4cCI6MjA4NTU3Mzc2OH0.cI5AV0N-F1B2tqvBUKgOz0T2XCF3i56K23spLb3sHHY'; // <-- PEGA TU CLAVE ANON AQUÍ
+const supabase = createClient(supabaseUrl, supabaseKey);
+
+// --- Datos simulados para funcionalidades aún no migradas ---
+
 
 const mockData = {
     achievements: [],
@@ -22,10 +26,8 @@ const mockData = {
     chatMessages: [{ id: 1, userId: 1, message: 'Hello world!' }],
     launchMessages: [{ id: 1, userId: 1, message: 'First launch!' }],
     downloads: [{ download_id: 1, name: 'Game Client v1.0', url: '/downloads/client.zip' }],
-    friendships: [{ userId1: 1, userId2: 2, status: 'accepted' }],
     gchatHistory: { '1-3': [{ senderId: 1, recipient_id: 3, message: 'Hey!' }] },
     shopItems: [{ id: 1, name: 'Gold Sword', price: 500 }],
-    userProfiles: { 1: { bio: 'Gamer', status: 'Online' }, 2: { bio: 'Admin', status: 'Away' } },
     news: [
         { id: 1, title: 'Welcome to GLauncher', content: 'We are live!', date: '2023-10-27' },
         { id: 2, title: 'Patch Notes v1.1', content: 'Bug fixes and performance improvements.', date: '2023-11-01' }
@@ -60,14 +62,18 @@ const adminRequired = async (req, res, next) => {
         return res.status(401).json({ error: 'Acceso denegado. Usuario no autenticado.' });
     }
 
-    // Check if role is present in the token payload
-    if (req.user.role === 'admin') {
-        return next();
+    // Verificamos el rol desde la base de datos real para máxima seguridad
+    const { data: user, error } = await supabase
+        .from('users')
+        .select('is_admin')
+        .eq('id', req.user.id)
+        .single();
+
+    if (error || !user) {
+        return res.status(404).json({ error: 'Usuario no encontrado.' });
     }
 
-    // Fallback: Verificar en base de datos mock
-    const user = users.find(u => u.id === req.user.id);
-    if (user && user.role === 'admin') {
+    if (user && user.is_admin) {
         return next();
     }
 
@@ -160,6 +166,62 @@ app.get('/login/google', (req, res) => {
     res.send(getNeonLoaderHtml('Google', googleUrl));
 });
 
+// --- NUEVAS RUTAS DE AUTENTICACIÓN CON SUPABASE ---
+
+app.post('/api/auth/register', async (req, res) => {
+    const { username, password, security_code } = req.body;
+
+    if (!username || !password || !security_code) {
+        return res.status(400).json({ message: 'Todos los campos son requeridos.' });
+    }
+    if (password.length < 6) {
+        return res.status(400).json({ message: 'La contraseña debe tener al menos 6 caracteres.' });
+    }
+    if (security_code.length !== 6) {
+        return res.status(400).json({ message: 'El código de seguridad debe tener 6 dígitos.' });
+    }
+
+    try {
+        const password_hash = await bcrypt.hash(password, SALT_ROUNDS);
+
+        const { data, error } = await supabase
+            .from('users')
+            .insert([{
+                username,
+                password_hash,
+                security_code,
+                account_type: 'standard',
+                nickname: username
+            }])
+            .select()
+            .single();
+
+        if (error) {
+            if (error.code === '23505') { // Código de violación de unicidad (username ya existe)
+                return res.status(409).json({ message: 'El nombre de usuario ya está en uso.' });
+            }
+            throw error;
+        }
+
+        res.status(201).json({ message: 'Usuario registrado con éxito.', userId: data.id });
+
+    } catch (error) {
+        console.error('Error en el registro:', error);
+        res.status(500).json({ message: 'Error interno del servidor.' });
+    }
+});
+
+app.post('/api/auth/check_credentials', async (req, res) => {
+    const { username, password } = req.body;
+    const { data: user, error } = await supabase.from('users').select('id, password_hash').eq('username', username).single();
+
+    if (error || !user || !await bcrypt.compare(password, user.password_hash)) {
+        return res.status(401).json({ message: 'Credenciales incorrectas.' });
+    }
+
+    res.status(200).json({ message: 'Credenciales correctas.' });
+});
+
 app.get('/auth/google/callback', (req, res) => {
     const user = users[0]; 
     const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '1h' });
@@ -175,45 +237,101 @@ app.get('/auth/microsoft/callback', (req, res) => {
 });
 
 const upload = multer({ storage: multer.memoryStorage() });
-app.post('/api/auth/complete_registration', loginRequired, upload.single('profile_picture'), (req, res) => {
-    const userId = req.user.id;
-    const userIndex = users.findIndex(u => u.id === userId);
-    if (userIndex === -1) return res.status(404).json({ message: 'Usuario no encontrado.' });
+app.post('/api/auth/complete_registration', loginRequired, upload.single('profile_picture'), async (req, res) => {
+    const { username, password, security_code } = req.body;
+    const updateData = { register_complete: 'yes' };
 
-    const { username, password, phone_number } = req.body;
-    if (username) users[userIndex].username = username;
-    if (password) users[userIndex].password = password;
-
-    if (!mockData.userProfiles[userId]) mockData.userProfiles[userId] = {};
-    if (phone_number) mockData.userProfiles[userId].phone_number = phone_number;
-
-    if (req.file) {
-        const base64Image = `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`;
-        mockData.userProfiles[userId].profile_picture = base64Image;
+    if (username) updateData.username = username;
+    if (security_code) updateData.security_code = security_code;
+    if (password) {
+        updateData.password_hash = await bcrypt.hash(password, SALT_ROUNDS);
     }
 
-    const token = jwt.sign({ id: userId, username: users[userIndex].username, role: users[userIndex].role }, JWT_SECRET, { expiresIn: '7d' });
+    const { data: updatedUser, error } = await supabase
+        .from('users')
+        .update(updateData)
+        .eq('id', req.user.id)
+        .select()
+        .single();
+
+    if (error) {
+        console.error('Error al completar registro:', error);
+        return res.status(500).json({ message: 'No se pudo completar el registro.' });
+    }
+
+    const token = jwt.sign({ id: updatedUser.id, username: updatedUser.username, role: updatedUser.role }, JWT_SECRET, { expiresIn: '7d' });
     res.json({ message: 'Registro completado con éxito.', token });
 });
 
-app.post('/login', (req, res) => {
-    const { username, password } = req.body;
-    const user = users.find(u => u.username === username && u.password === password);
+app.post('/api/auth/login', async (req, res) => {
+    const { username, password, security_code } = req.body;
 
-    if (user) {
-        const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '1h' });
-        res.json({ token });
-    } else {
-        res.status(401).json({ error: 'Credenciales incorrectas' });
+    const { data: user, error: userError } = await supabase
+        .from('users')
+        .select('*')
+        .eq('username', username)
+        .single();
+
+    if (userError || !user) {
+        return res.status(401).json({ message: 'Credenciales incorrectas.' });
     }
+
+    const isPasswordCorrect = await bcrypt.compare(password, user.password_hash);
+    if (!isPasswordCorrect) {
+        return res.status(401).json({ message: 'Credenciales incorrectas.' });
+    }
+
+    if (user.security_code !== security_code) {
+        return res.status(401).json({ message: 'El código de seguridad es incorrecto.' });
+    }
+
+    const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '1h' });
+    res.json({ token });
 });
 
-app.get('/protected', loginRequired, (req, res) => {
-    res.json({ message: 'Accediste a una ruta protegida', user: req.user });
+// --- NUEVAS RUTAS DE DATOS DE USUARIO PARA EL DASHBOARD ---
+
+app.get('/api/user_info', loginRequired, async (req, res) => {
+    const { data: user, error } = await supabase
+        .from('users')
+        .select('username, nickname, gcoins, play_time_seconds, created_at, account_type, profile_picture_url, role, is_admin, register_complete')
+        .eq('id', req.user.id)
+        .single();
+
+    if (error || !user) {
+        return res.status(404).json({ message: 'Usuario no encontrado.' });
+    }
+    res.json(user);
 });
 
-app.get('/admin', loginRequired, adminRequired, (req, res) => {
-    res.json({ message: 'Accediste al panel de administración' });
+app.get('/api/friends', loginRequired, async (req, res) => {
+    const userId = req.user.id;
+
+    // Amigos aceptados
+    const { data: friends1, error1 } = await supabase.from('friendships').select('user2:users!user_id_2(*)').eq('user_id_1', userId).eq('status', 'accepted');
+    const { data: friends2, error2 } = await supabase.from('friendships').select('user1:users!user_id_1(*)').eq('user_id_2', userId).eq('status', 'accepted');
+
+    // Solicitudes pendientes (que yo he recibido)
+    const { data: pending, error3 } = await supabase.from('friendships').select('user1:users!user_id_1(*)').eq('user_id_2', userId).eq('status', 'pending');
+
+    // Solicitudes enviadas (que yo he enviado)
+    const { data: sent, error4 } = await supabase.from('friendships').select('user2:users!user_id_2(*)').eq('user_id_1', userId).eq('status', 'pending');
+
+    if (error1 || error2 || error3 || error4) {
+        console.error('Error fetching friends:', error1 || error2 || error3 || error4);
+        return res.status(500).json({ message: 'Error al obtener la lista de amigos.' });
+    }
+
+    const friends = [...friends1.map(f => f.user2), ...friends2.map(f => f.user1)];
+
+    res.json({
+        friends: friends,
+        pending: pending.map(p => p.user1),
+        sent: sent.map(s => s.user2)
+    });
 });
+
+// ... (Aquí irían las otras rutas como /admin, /protected, etc., que ya tienes)
+
 
 module.exports = { app, loginRequired, adminRequired, publicEndpoint };
