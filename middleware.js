@@ -222,18 +222,104 @@ app.post('/api/auth/check_credentials', async (req, res) => {
     res.status(200).json({ message: 'Credenciales correctas.' });
 });
 
-app.get('/auth/google/callback', (req, res) => {
-    const user = users[0]; 
-    const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '1h' });
-    const targetUrl = 'https://glauncher.vercel.app/register-complete.html';
-    res.send(getSuccessHtml(token, targetUrl));
+app.get('/auth/google/callback', async (req, res) => {
+    // En una implementación real, aquí usarías el `req.query.code` para obtener los datos del usuario de Google.
+    // Para esta demostración, simularemos que hemos obtenido un perfil de Google.
+    const googleProfile = {
+        email: `user_${Date.now()}@gmail.com`,
+        name: 'Google User',
+    };
+
+    try {
+        // 1. Buscar si el usuario ya existe en nuestra base de datos
+        let { data: user, error: findError } = await supabase
+            .from('users')
+            .select('*')
+            .eq('username', googleProfile.email) // Usamos el email como identificador único
+            .single();
+
+        // 2. Si el usuario no existe, lo creamos
+        if (findError || !user) {
+            const { data: newUser, error: createError } = await supabase
+                .from('users')
+                .insert({
+                    username: googleProfile.email,
+                    nickname: googleProfile.name,
+                    account_type: 'google',
+                    register_complete: 'yes', // Marcamos el registro como completo
+                })
+                .select()
+                .single();
+            
+            if (createError) throw createError;
+            user = newUser;
+        }
+
+        // 3. Generar el token JWT para el usuario (ya sea existente o nuevo)
+        const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '1h' });
+
+        // 4. Redirigir directamente al dashboard
+        const targetUrl = 'https://glauncher.vercel.app/dashboard.html';
+        res.send(getSuccessHtml(token, targetUrl));
+
+    } catch (error) {
+        console.error('Error en el callback de Google:', error);
+        res.status(500).send('<h1>Error durante la autenticación con Google.</h1>');
+    }
 });
 
-app.get('/login/microsoft', (req, res) => res.send(getNeonLoaderHtml('Microsoft', '/auth/microsoft/callback')));
-app.get('/auth/microsoft/callback', (req, res) => {
-    const user = users[0];
-    const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '1h' });
-    res.json({ message: 'Microsoft auth successful (mock)', token });
+app.get('/login/microsoft', (req, res) => {
+    const protocol = req.headers['x-forwarded-proto'] || req.protocol;
+    const host = req.get('host');
+    const redirectUri = `${protocol}://${host}/auth/microsoft/callback`;
+    // En una implementación real, aquí construirías la URL de autenticación de Microsoft
+    const microsoftUrl = `/auth/microsoft/callback`; // URL de callback simulada
+    res.send(getNeonLoaderHtml('Microsoft', microsoftUrl));
+});
+
+app.get('/auth/microsoft/callback', async (req, res) => {
+    // SIMULACIÓN: Al igual que con Google, aquí obtendrías el perfil del usuario de Microsoft.
+    const microsoftProfile = {
+        email: `user_${Date.now()}@outlook.com`,
+        name: 'Microsoft User',
+    };
+
+    try {
+        // 1. Buscar si el usuario ya existe
+        let { data: user, error: findError } = await supabase
+            .from('users')
+            .select('*')
+            .eq('username', microsoftProfile.email)
+            .single();
+
+        // 2. Si no existe, crearlo
+        if (findError || !user) {
+            const { data: newUser, error: createError } = await supabase
+                .from('users')
+                .insert({
+                    username: microsoftProfile.email,
+                    nickname: microsoftProfile.name,
+                    account_type: 'microsoft',
+                    register_complete: 'yes',
+                })
+                .select()
+                .single();
+            
+            if (createError) throw createError;
+            user = newUser;
+        }
+
+        // 3. Generar token
+        const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '1h' });
+
+        // 4. Redirigir al dashboard
+        const targetUrl = 'https://glauncher.vercel.app/dashboard.html';
+        res.send(getSuccessHtml(token, targetUrl));
+
+    } catch (error) {
+        console.error('Error en el callback de Microsoft:', error);
+        res.status(500).send('<h1>Error durante la autenticación con Microsoft.</h1>');
+    }
 });
 
 const upload = multer({ storage: multer.memoryStorage() });
