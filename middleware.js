@@ -199,7 +199,8 @@ app.post('/api/auth/register', async (req, res) => {
                 password_hash,
                 security_code,
                 account_type: 'standard',
-                nickname: username
+                nickname: username,
+                register_complete: 'yes' // Marcar como completo en el registro estándar
             }])
             .select()
             .single();
