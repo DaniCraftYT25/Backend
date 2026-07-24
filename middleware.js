@@ -177,6 +177,14 @@ app.post('/api/auth/register', async (req, res) => {
     if (password.length < 6) {
         return res.status(400).json({ message: 'La contraseña debe tener al menos 6 caracteres.' });
     }
+    // Validación de formato y longitud del nombre de usuario
+    if (username.length > 16) {
+        return res.status(400).json({ message: 'El nombre de usuario no puede tener más de 16 caracteres.' });
+    }
+    if (/\s/.test(username)) {
+        return res.status(400).json({ message: 'El nombre de usuario no puede contener espacios.' });
+    }
+
     if (security_code.length !== 6) {
         return res.status(400).json({ message: 'El código de seguridad debe tener 6 dígitos.' });
     }
@@ -222,9 +230,43 @@ app.post('/api/auth/check_credentials', async (req, res) => {
     res.status(200).json({ message: 'Credenciales correctas.' });
 });
 
+app.post('/api/auth/check-username', async (req, res) => {
+    const { username } = req.body;
+
+    if (!username) {
+        return res.status(400).json({ available: false, message: 'Nombre de usuario no proporcionado.' });
+    }
+
+    // Re-validar en el servidor por seguridad
+    if (username.length > 16 || /\s/.test(username)) {
+        return res.status(400).json({ available: false, message: 'Formato de usuario no válido.' });
+    }
+
+    try {
+        const { data, error } = await supabase
+            .from('users')
+            .select('id')
+            .eq('username', username)
+            .single();
+
+        // Si `data` no es null, el usuario existe, por lo tanto no está disponible.
+        if (data) {
+            return res.json({ available: false });
+        }
+
+        // Si `data` es null y no hay error, el usuario está disponible.
+        return res.json({ available: true });
+
+    } catch (error) {
+        console.error('Error al verificar el nombre de usuario:', error);
+        res.status(500).json({ available: false, message: 'Error interno del servidor.' });
+    }
+});
+
 app.get('/auth/google/callback', async (req, res) => {
-    // En una implementación real, aquí usarías el `req.query.code` para obtener los datos del usuario de Google.
-    // Para esta demostración, simularemos que hemos obtenido un perfil de Google.
+    // IMPORTANTE: El bucle de "siempre es la primera vez" ocurre aquí.
+    // Estás creando un usuario FALSO con un email diferente en cada petición (`user_${Date.now()}@gmail.com`).
+    // Para solucionarlo, debes implementar el flujo OAuth2 completo para obtener el perfil REAL del usuario de Google.
     const googleProfile = {
         email: `user_${Date.now()}@gmail.com`,
         name: 'Google User',
@@ -334,7 +376,16 @@ app.post('/api/auth/complete_registration', loginRequired, upload.single('profil
     const { username, password, security_code } = req.body;
     const updateData = { register_complete: 'yes' };
 
-    if (username) updateData.username = username;
+    if (username) {
+        // Añadir validación de formato y longitud también aquí
+        if (username.length > 16) {
+            return res.status(400).json({ message: 'El nombre de usuario no puede tener más de 16 caracteres.' });
+        }
+        if (/\s/.test(username)) {
+            return res.status(400).json({ message: 'El nombre de usuario no puede contener espacios.' });
+        }
+        updateData.username = username;
+    }
     if (security_code) updateData.security_code = security_code;
     if (password) {
         updateData.password_hash = await bcrypt.hash(password, SALT_ROUNDS);
