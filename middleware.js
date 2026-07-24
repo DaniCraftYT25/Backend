@@ -231,6 +231,7 @@ app.get('/auth/google/callback', async (req, res) => {
     };
 
     try {
+        let isNewUser = false;
         // 1. Buscar si el usuario ya existe en nuestra base de datos
         let { data: user, error: findError } = await supabase
             .from('users')
@@ -238,15 +239,16 @@ app.get('/auth/google/callback', async (req, res) => {
             .eq('username', googleProfile.email) // Usamos el email como identificador único
             .single();
 
-        // 2. Si el usuario no existe, lo creamos
+        // 2. Si el usuario no existe, lo creamos con el registro incompleto
         if (findError || !user) {
+            isNewUser = true;
             const { data: newUser, error: createError } = await supabase
                 .from('users')
                 .insert({
                     username: googleProfile.email,
                     nickname: googleProfile.name,
                     account_type: 'google',
-                    register_complete: 'yes', // Marcamos el registro como completo
+                    register_complete: 'no', // Marcamos el registro como INCOMPLETO
                 })
                 .select()
                 .single();
@@ -258,8 +260,13 @@ app.get('/auth/google/callback', async (req, res) => {
         // 3. Generar el token JWT para el usuario (ya sea existente o nuevo)
         const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '1h' });
 
-        // 4. Redirigir directamente al dashboard
-        const targetUrl = 'https://glauncher.vercel.app/dashboard.html';
+        // 4. Redirigir según el estado del registro
+        // Si el registro no está completo, se le envía a la página para que termine.
+        // Si ya estaba completo (es un login normal), va al dashboard.
+        const targetUrl = user.register_complete === 'yes' 
+            ? 'https://glauncher.vercel.app/dashboard.html'
+            : 'https://glauncher.vercel.app/register-complete.html';
+
         res.send(getSuccessHtml(token, targetUrl));
 
     } catch (error) {
